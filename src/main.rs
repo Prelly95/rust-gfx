@@ -70,7 +70,17 @@ use gfx_hal::pso::
 	Specialization,
 	Rect,
 	Viewport,
+	ShaderStageFlags,
 };
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+struct PushConstants {
+	color: [f32; 4],
+	pos: [f32; 2],
+	scale: [f32; 2],
+}
+
 
 fn main()
 {	const APP_NAME: &'static str = "Rust GFX";
@@ -176,8 +186,9 @@ fn main()
 	};
 
 	let pipeline_layout = unsafe
-	{	device
-			.create_pipeline_layout(&[], &[])
+	{	let push_constant_bytes = std::mem::size_of::<PushConstants>() as u32;
+		device
+			.create_pipeline_layout(&[], &[(ShaderStageFlags::VERTEX, 0..push_constant_bytes)])
 			.expect("Out of memory")
 	};
 
@@ -260,6 +271,7 @@ fn main()
 		)
 	);
 
+	let start_time = std::time::Instant::now();
 	event_loop.run(move | event, _, control_flow|
 	{	match event
 		{	Event::WindowEvent
@@ -288,7 +300,49 @@ fn main()
 			Event::RedrawRequested(_) =>
 			{	let res: &mut Resources<_> = &mut resource_holder.0;
 				let render_pass = &res.render_passes[0];
+				let pipeline_layout = &res.pipeline_layouts[0];
 				let pipeline = &res.pipelines[0];
+
+				let anim = start_time.elapsed().as_secs_f32().sin() * 0.5 + 0.5;
+				let small = [0.33, 0.33];
+				let triangles =
+				&[	// Red triangle
+					PushConstants
+					{	color: [1.0, 0.0, 0.0, 1.0],
+						pos: [-0.5, -0.5],
+						scale: small,
+					},
+					// Green triangle
+					PushConstants
+					{	color: [0.0, 1.0, 0.0, 1.0],
+						pos: [0.0, -0.5],
+						scale: small,
+					},
+					// Blue triangle
+					PushConstants
+					{	color: [0.0, 0.0, 1.0, 1.0],
+						pos: [0.5, -0.5],
+						scale: small,
+					},
+					// Blue <-> cyan animated triangle
+					PushConstants
+					{	color: [0.0, anim, 1.0, 1.0],
+						pos: [-0.5, 0.5],
+						scale: small,
+					},
+					// Down <-> up animated triangle
+					PushConstants
+					{	color: [1.0, 1.0, 1.0, 1.0],
+						pos: [0.0, 0.5 - anim * 0.5],
+						scale: small,
+					},
+					// Small <-> big animated triangle
+					PushConstants
+					{	color: [1.0, 1.0, 1.0, 1.0],
+						pos: [0.5, 0.5],
+						scale: [0.33 + anim * 0.33, 0.33 + anim * 0.33],
+					},
+				];
 
 				unsafe
 				{	let render_timeout_ns = 1_000_000_000;
@@ -377,7 +431,17 @@ fn main()
 						SubpassContents::Inline,
 					);
 					command_buffer.bind_graphics_pipeline(pipeline);
-					command_buffer.draw(0..3, 0..1);
+					
+					for triangle in triangles
+					{	command_buffer.push_graphics_constants
+						(	pipeline_layout,
+							ShaderStageFlags::VERTEX,
+							0,
+							push_constant_bytes(triangle),
+						);
+						command_buffer.draw(0..3, 0..1);
+					}
+
 					command_buffer.end_render_pass();
 					command_buffer.finish();
 
@@ -403,9 +467,6 @@ fn main()
 		}
 
 	});
-	println!("{:?}", APP_NAME);
-	println!("{:?}", logical_window_size);
-	println!("{:?}", physical_window_size);
 }
 
 fn compile_shader(glsl: &str, shader_kind: ShaderKind) -> Vec<u32>
@@ -486,3 +547,10 @@ unsafe fn make_pipeline<B: gfx_hal::Backend>(
 	pipeline
 }
 
+/// Returns a view of a struct as a slice of `u32`s.
+unsafe fn push_constant_bytes<T>(push_constants: &T) -> &[u32] {
+	let size_in_bytes = std::mem::size_of::<T>();
+	let size_in_u32s = size_in_bytes / std::mem::size_of::<u32>();
+	let start_ptr = push_constants as *const T as *const u32;
+	std::slice::from_raw_parts(start_ptr, size_in_u32s)
+}
